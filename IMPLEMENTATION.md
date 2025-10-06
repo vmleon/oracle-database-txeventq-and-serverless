@@ -3,31 +3,14 @@
 ## Prerequisites
 
 ### Required Software
-```bash
-# Java 23
-brew install openjdk@23
 
-# Gradle
-brew install gradle
-
-# Fn CLI
-brew tap fn/fn
-brew install fn
-
-# Podman
-brew install podman
-podman machine init
-podman machine start
-
-# OCI CLI
-brew install oci-cli
-
-# Terraform
-brew install terraform
-
-# Ansible
-brew install ansible
-```
+- Java 23
+- Gradle
+- Fn CLI
+- Podman (with machine initialized and running)
+- OCI CLI
+- Terraform
+- Ansible
 
 ## Phase 1: Local Development Setup
 
@@ -37,7 +20,7 @@ brew install ansible
 ```bash
 podman run -d --name oracle-db \
   -p 1521:1521 \
-  -e ORACLE_PWD=YourPassword123# \
+  -e ORACLE_PWD=YourPassword123 \
   container-registry.oracle.com/database/free:latest
 
 # Wait ~2-3 minutes for database to be ready
@@ -58,22 +41,14 @@ podman run -d --name mailpit \
 
 **Create User** (`db/01_create_user.sql`):
 ```sql
--- Connect as SYS or SYSTEM
-ALTER SESSION SET CONTAINER = FREEPDB1;
-
-CREATE USER txeventq_user IDENTIFIED BY "YourPassword123#";
-
-GRANT CONNECT, RESOURCE TO txeventq_user;
-GRANT CREATE SESSION TO txeventq_user;
-GRANT EXECUTE ON DBMS_AQ TO txeventq_user;
-GRANT EXECUTE ON DBMS_AQADM TO txeventq_user;
-GRANT SELECT ON SYS.DBA_QUEUE_TABLES TO txeventq_user;
-ALTER USER txeventq_user QUOTA UNLIMITED ON DATA;
+-- Connect as PDBADMIN (default user for FREEPDB1)
+-- No user creation needed for local deployment
+-- PDBADMIN already has necessary privileges
 ```
 
 **Create Queue** (`db/02_create_queue.sql`):
 ```sql
--- Connect as txeventq_user
+-- Connect as PDBADMIN
 BEGIN
     DBMS_AQADM.STOP_QUEUE(queue_name => 'REPORT_QUEUE');
     DBMS_AQADM.DROP_QUEUE(queue_name => 'REPORT_QUEUE');
@@ -115,7 +90,7 @@ WHERE queue_name = 'REPORT_QUEUE';
 
 **Enqueue Test Messages** (`db/03_enqueue_test_messages.sql`):
 ```sql
--- Connect as txeventq_user
+-- Connect as PDBADMIN
 DECLARE
     enqueue_options    DBMS_AQ.ENQUEUE_OPTIONS_T;
     message_properties DBMS_AQ.MESSAGE_PROPERTIES_T;
@@ -150,10 +125,12 @@ END;
 
 **Execute Setup**:
 ```bash
-# Connect and run scripts
-sqlplus sys/YourPassword123#@//localhost:1521/FREEPDB1 as sysdba @db/01_create_user.sql
-sqlplus txeventq_user/YourPassword123#@//localhost:1521/FREEPDB1 @db/02_create_queue.sql
-sqlplus txeventq_user/YourPassword123#@//localhost:1521/FREEPDB1 @db/03_enqueue_test_messages.sql
+# Grant permissions (connect as SYS)
+sql sys/YourPassword123@//localhost:1521/FREEPDB1 as sysdba @db/01_grant_permissions.sql
+
+# Connect and run scripts as PDBADMIN
+sql pdbadmin/YourPassword123@//localhost:1521/FREEPDB1 @db/02_create_queue.sql
+sql pdbadmin/YourPassword123@//localhost:1521/FREEPDB1 @db/03_enqueue_test_messages.sql
 ```
 
 ### 1.3 Function Implementation
@@ -191,9 +168,8 @@ dependencies {
     // Fn Framework
     implementation 'com.fnproject.fn:api:1.0.190'
 
-    // Oracle JDBC and AQ
+    // Oracle JDBC
     implementation 'com.oracle.database.jdbc:ojdbc11:23.3.0.23.09'
-    implementation 'com.oracle.database.messaging:aqapi:23.3.0.23.09'
     implementation 'com.oracle.database.security:oraclepki:23.3.0.23.09'
     implementation 'com.oracle.database.security:osdt_cert:23.3.0.23.09'
     implementation 'com.oracle.database.security:osdt_core:23.3.0.23.09'
@@ -239,8 +215,6 @@ package com.oracle.fn;
 
 import com.fnproject.fn.api.FnConfiguration;
 import com.fnproject.fn.api.RuntimeContext;
-import oracle.AQ.*;
-import oracle.jdbc.OracleConnection;
 import com.oracle.bmc.auth.ResourcePrincipalAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.*;
@@ -300,6 +274,11 @@ public class TxEventQProcessor {
             props.put("user", username);
             props.put("password", password);
 
+            // DRCP pooling for Production (OCI) environment
+            if ("PRODUCTION".equals(environment)) {
+                props.put("oracle.jdbc.DRCPConnectionClass", "TXEVENTQ_CLASS");
+            }
+
             dbConnection = DriverManager.getConnection(connStr, props);
         }
         return dbConnection;
@@ -310,26 +289,52 @@ public class TxEventQProcessor {
         int batchSize = Integer.parseInt(System.getenv("BATCH_SIZE"));
         String queueName = System.getenv("QUEUE_NAME");
 
-        AQQueueTable queueTable = ((AQjmsSession) conn).getQueueTable(
-            conn.getMetaData().getUserName(), queueName + "_TABLE"
-        );
-        AQQueue queue = queueTable.getQueue(queueName);
+        // Use DBMS_AQ API directly for TxEventQ
+        String dequeueSQL = "DECLARE " +
+            "  dequeue_options DBMS_AQ.DEQUEUE_OPTIONS_T; " +
+            "  message_properties DBMS_AQ.MESSAGE_PROPERTIES_T; " +
+            "  message_handle RAW(16); " +
+            "  message JSON; " +
+            "BEGIN " +
+            "  dequeue_options.dequeue_mode := DBMS_AQ.REMOVE; " +
+            "  dequeue_options.visibility := DBMS_AQ.ON_COMMIT; " +
+            "  dequeue_options.wait := DBMS_AQ.NO_WAIT; " +
+            "  DBMS_AQ.DEQUEUE( " +
+            "    queue_name => ?, " +
+            "    dequeue_options => dequeue_options, " +
+            "    message_properties => message_properties, " +
+            "    payload => message, " +
+            "    msgid => message_handle " +
+            "  ); " +
+            "  ? := message.to_string(); " +
+            "EXCEPTION " +
+            "  WHEN OTHERS THEN " +
+            "    ? := NULL; " +
+            "END;";
 
-        AQDequeueOptions deqOptions = new AQDequeueOptions();
-        deqOptions.setDequeueMode(AQDequeueOptions.DequeueMode.REMOVE);
-        deqOptions.setVisibility(AQDequeueOptions.VisibilityOption.ON_COMMIT);
-        deqOptions.setWaitTime(0); // NO_WAIT
+        try (CallableStatement stmt = conn.prepareCall(dequeueSQL)) {
+            for (int i = 0; i < batchSize; i++) {
+                stmt.setString(1, queueName);
+                stmt.registerOutParameter(2, Types.CLOB);
+                stmt.registerOutParameter(3, Types.VARCHAR);
 
-        for (int i = 0; i < batchSize; i++) {
-            try {
-                AQMessage msg = queue.dequeue(deqOptions, null);
-                if (msg == null) break;
+                try {
+                    stmt.execute();
+                    String jsonPayload = stmt.getString(2);
 
-                String jsonPayload = new String(msg.getPayload(), StandardCharsets.UTF_8);
-                processMessage(jsonPayload);
-                processed++;
-            } catch (Exception e) {
-                System.err.println("Error processing message: " + e.getMessage());
+                    if (jsonPayload == null || jsonPayload.trim().isEmpty()) {
+                        break; // Queue is empty
+                    }
+
+                    processMessage(jsonPayload);
+                    processed++;
+                } catch (SQLException e) {
+                    // Queue empty or error
+                    if (e.getMessage().contains("ORA-25228")) {
+                        break; // No more messages
+                    }
+                    System.err.println("Error dequeuing message: " + e.getMessage());
+                }
             }
         }
 
@@ -558,8 +563,8 @@ fn config app txeventq-local SENDER_EMAIL noreply@example.com
 fn config app txeventq-local RECIPIENT_EMAILS user@example.com
 fn config app txeventq-local LOCAL_TEMP_DIR /tmp/reports
 fn config app txeventq-local DB_CONNECTION_STRING "jdbc:oracle:thin:@localhost:1521/FREEPDB1"
-fn config app txeventq-local DB_USERNAME txeventq_user
-fn config app txeventq-local DB_PASSWORD "YourPassword123#"
+fn config app txeventq-local DB_USERNAME pdbadmin
+fn config app txeventq-local DB_PASSWORD "YourPassword123"
 ```
 
 **Invoke Function**:
@@ -601,7 +606,7 @@ variable "smtp_password" { sensitive = true }
 variable "sender_email" {}
 variable "recipient_emails" {}
 
-variable "db_username" { default = "txeventq_user" }
+variable "db_username" { default = "ADMIN" }
 variable "db_password" { sensitive = true }
 
 variable "function_memory_mb" { default = 256 }
@@ -609,6 +614,10 @@ variable "ocir_region" {}
 variable "tenancy_namespace" {}
 variable "ocir_repo" {}
 variable "image_tag" { default = "latest" }
+
+variable "schedule_cron_expression" { default = "0 * * * *" }  # Every hour
+variable "schedule_display_name" { default = "txeventq-function-schedule" }
+variable "schedule_description" { default = "Periodic schedule to invoke TxEventQ processor function" }
 ```
 
 **network.tf**:
@@ -745,10 +754,20 @@ fn push --registry <region>.ocir.io/<tenancy-namespace>/<repo-name>
 
 ```bash
 # Download wallet (or use Terraform output)
-# Connect and run scripts
-sqlplus admin/<password>@<adb_connection_string> @db/01_create_user.sql
-sqlplus txeventq_user/<password>@<adb_connection_string> @db/02_create_queue.sql
+# Connect and run scripts as ADMIN
+sql ADMIN/<password>@<adb_connection_string> @db/02_create_queue.sql
 ```
+
+**DRCP Configuration** (Autonomous Database):
+
+DRCP (Database Resident Connection Pooling) is automatically enabled on Autonomous Database. No manual setup required. The connection string must use the `:POOLED` suffix:
+
+```
+# Example DRCP connection string for ADB
+jdbc:oracle:thin:@txeventqdb_high?TNS_ADMIN=/tmp/wallet:POOLED
+```
+
+The function code automatically sets the DRCP connection class (`TXEVENTQ_CLASS`) when `ENVIRONMENT=PRODUCTION`.
 
 ## Monitoring and Troubleshooting
 
@@ -779,6 +798,7 @@ echo '{}' | fn invoke txeventq-local txeventq-processor
 - Verify NSG rules allow function → ADB:1522
 - Check NAT Gateway configured in private subnet route table
 - Verify TNS_ADMIN system property set correctly
+- Ensure connection string uses `:POOLED` suffix for DRCP (Production only)
 
 **Email Not Sent**:
 - Check mailpit logs: `podman logs mailpit`

@@ -1,0 +1,48 @@
+# OCI Configuration
+tenancy_ocid     = "ocid1.tenancy.oc1..xxx"
+compartment_ocid = "ocid1.compartment.oc1..xxx"
+region           = "us-ashburn-1"
+
+# Network Configuration
+vcn_cidr            = "10.0.0.0/16"
+public_subnet_cidr  = "10.0.1.0/24"
+private_subnet_cidr = "10.0.2.0/24"
+
+# Autonomous Database
+adb_db_name         = "txeventqdb"
+adb_display_name    = "TxEventQ DB"
+adb_admin_password  = "YourSecurePassword123#"
+adb_wallet_password = "WalletPassword123#"
+
+# Database User
+db_username = "ADMIN"
+db_password = "YourSecurePassword123#"
+
+# Object Storage
+bucket_name = "txeventq-reports"
+
+# Queue Configuration
+queue_name        = "REPORT_QUEUE"
+batch_size        = "5"
+par_validity_days = "7"
+
+# SMTP Configuration
+smtp_host        = "your-smtp-host"
+smtp_port        = "1025"
+smtp_username    = "your-smtp-username"
+smtp_password    = "your-smtp-password"
+sender_email     = "noreply@yourdomain.com"
+recipient_emails = "user1@example.com,user2@example.com"
+
+# Function Configuration
+function_memory_mb      = 256
+function_timeout_seconds = 180
+
+# Container Registry
+ocir_region       = "us-ashburn-1"
+tenancy_namespace = "your-tenancy-namespace"
+ocir_repo         = "txeventq-processor"
+image_tag         = "latest"
+
+# Alarm Configuration
+alarm_frequency_minutes = 5

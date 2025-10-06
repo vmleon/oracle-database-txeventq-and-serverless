@@ -1,0 +1,46 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.oracle.fn'
+version = '1.0-SNAPSHOT'
+
+sourceCompatibility = '23'
+targetCompatibility = '23'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Fn Framework
+    implementation 'com.fnproject.fn:api:1.0.190'
+
+    // Oracle JDBC
+    implementation 'com.oracle.database.jdbc:ojdbc11:23.3.0.23.09'
+    implementation 'com.oracle.database.security:oraclepki:23.3.0.23.09'
+    implementation 'com.oracle.database.security:osdt_cert:23.3.0.23.09'
+    implementation 'com.oracle.database.security:osdt_core:23.3.0.23.09'
+
+    // OCI SDK (Resource Principal, Object Storage, PAR)
+    implementation 'com.oracle.oci.sdk:oci-java-sdk-common:3.30.0'
+    implementation 'com.oracle.oci.sdk:oci-java-sdk-objectstorage:3.30.0'
+    implementation 'com.oracle.oci.sdk:oci-java-sdk-addons-resteasy-client-configurator:3.30.0'
+
+    // Jakarta Mail
+    implementation 'jakarta.mail:jakarta.mail-api:2.1.2'
+    implementation 'org.eclipse.angus:angus-mail:2.0.2'
+
+    // JSON processing
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.0'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    implementation 'org.slf4j:slf4j-simple:2.0.9'
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.oracle.fn.TxEventQProcessor'
+    }
+}

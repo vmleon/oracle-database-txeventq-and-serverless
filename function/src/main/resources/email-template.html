@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        h2 { color: #333; }
+        .download-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Data Safe Report</h2>
+        <p><strong>Date:</strong> {DATE}</p>
+        <p>A new report is available for download:</p>
+        <p><a href="{DOWNLOAD_LINK}" class="download-btn">Download {TITLE}</a></p>
+        <p><small>This is an automated message. Please do not reply.</small></p>
+    </div>
+</body>
+</html>

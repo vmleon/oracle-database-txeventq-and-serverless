@@ -57,4 +57,4 @@ This project has been organized into focused documents:
 - Local development (Podman containers)
 - OCI production (Terraform-managed infrastructure)
 
-**Estimated Cost**: ~$25-30/month (POC)
+**Cost**: Optimized for Enterprise POC (no hard budget limit)

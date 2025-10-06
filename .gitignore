@@ -1,0 +1,30 @@
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/production.tfvars
+terraform/outputs.json
+terraform/*.zip
+
+# Gradle
+function/.gradle/
+function/build/
+function/.idea/
+
+# Java
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Wallet files
+wallet/
+*.zip
+
+# Temp files
+/tmp/reports/

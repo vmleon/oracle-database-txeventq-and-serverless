@@ -4,18 +4,18 @@
 
 ```
 ┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│ OCI Monitoring  │         │  OCI Functions   │         │ Autonomous DB   │
-│     Alarm       ├────────>│  (Serverless)    ├────────>│   23ai w/       │
-│  (5min trigger) │         │                  │         │   TxEventQ      │
+│ OCI Resource    │         │  OCI Functions   │         │ Autonomous DB   │
+│   Scheduler     ├────────>│  (Serverless)    ├────────>│   23ai w/       │
+│ (CRON trigger)  │         │                  │         │   TxEventQ      │
 └─────────────────┘         │  - Dequeue msgs  │         └─────────────────┘
                             │  - Create files  │
-        │                   │  - Upload to OS  │                 │
-        │                   │  - Create PARs   │                 │
-        v                   │  - Send emails   │                 │
-┌─────────────────┐         └────────┬─────────┘                 │
-│ OCI Notification│                  │                           │
-│     Topic       │                  v                           │
-└─────────────────┘         ┌──────────────────┐                 │
+                            │  - Upload to OS  │                 │
+                            │  - Create PARs   │                 │
+                            │  - Send emails   │                 │
+                            └────────┬─────────┘                 │
+                                     │                           │
+                                     v                           │
+                            ┌──────────────────┐                 │
                             │ Object Storage   │                 │
                             │  + PAR Links     │                 │
                             └──────────────────┘                 │
@@ -39,6 +39,7 @@
 **Purpose**: Development, testing, and iteration without OCI costs
 
 **Components**:
+
 - **Oracle Database**: `container-registry.oracle.com/database/free:latest` (Oracle Database FREE 23ai)
   - Port: 1521
   - PDB: FREEPDB1
@@ -57,6 +58,7 @@
 **Purpose**: Production-like environment with full OCI integration
 
 **Components**:
+
 - **Oracle Autonomous Database 23ai Serverless**
   - Public endpoint, mTLS authentication
   - Wallet files (base64-encoded in function config)
@@ -68,9 +70,9 @@
 - **SMTP Server**: `axllent/mailpit` on compute instance
   - Public subnet with public IP
   - Provisioned via Ansible
-- **Trigger**: OCI Monitoring Alarm (5-minute interval)
+- **Trigger**: OCI Resource Scheduler (CRON-based)
 
-**Invocation**: Automatic via Alarm → Notification Topic → Function
+**Invocation**: Automatic via Resource Scheduler → Function (direct invocation)
 
 ## Network Architecture (OCI)
 
@@ -97,13 +99,15 @@ VCN: 10.0.0.0/16
 ### Network Security Groups (NSGs)
 
 **Function NSG** (private subnet):
+
 - Egress to ADB public endpoint: TCP/1522
 - Egress to SMTP server: TCP/1025 (from 10.0.2.0/24 to 10.0.1.0/24)
 - Egress to Object Storage: HTTPS/443 (via NAT or Service Gateway)
 
 **Compute NSG** (public subnet):
+
 - Ingress: TCP/1025 from VCN CIDR (SMTP)
-- Ingress: TCP/8025 from developer IP (UI access)
+- Ingress: TCP/8025 from 0.0.0.0/0 (UI access from internet)
 - Egress: Allow all (for yum updates)
 
 ### Connectivity Paths
@@ -118,9 +122,8 @@ VCN: 10.0.0.0/16
 ### Message Processing Workflow
 
 ```
-1. Alarm Triggers (every 5 minutes)
-   └─> Notification Topic
-       └─> Function Invocation
+1. Resource Scheduler Triggers (CRON-based)
+   └─> Function Invocation (direct, no intermediate services)
 
 2. Function Cold Start (if container not warm)
    ├─> Extract wallet to /tmp/wallet (OCI mode)
@@ -128,8 +131,8 @@ VCN: 10.0.0.0/16
    └─> Initialize OCI SDK clients (Resource Principal)
 
 3. Database Connection
-   ├─> Check static connection (reuse if valid)
-   └─> Create new connection if needed
+   ├─> LOCAL: Direct connection (no pooling)
+   └─> OCI: DRCP connection (Database Resident Connection Pooling) with Wallet (mTLS)
 
 4. Dequeue Messages (batch)
    ├─> Set dequeue options (REMOVE, ON_COMMIT, NO_WAIT)
@@ -165,11 +168,13 @@ VCN: 10.0.0.0/16
 ### Error Handling Strategy
 
 **Optimistic Processing**:
+
 - If one message fails, log error and continue with next
 - Batch commit at end (all-or-nothing for dequeued messages)
 - Failed messages remain in queue for next invocation
 
 **Transaction Boundaries**:
+
 ```
 BEGIN TRANSACTION
   ├─> Dequeue message(s)
@@ -181,6 +186,7 @@ EXCEPTION
 ```
 
 **Visibility Timeout**: 4 minutes
+
 - Messages invisible to other consumers during processing
 - If function times out (3 min), messages reappear in queue after 4 min
 - Prevents concurrent processing of same message
@@ -223,10 +229,17 @@ TxEventQ Queue: REPORT_QUEUE
 │   ├── Mode: REMOVE (delete after commit)
 │   ├── Visibility: ON_COMMIT
 │   └── Wait Time: 0 (NO_WAIT)
-└── User: txeventq_user
+└── User: PDBADMIN (local) or ADMIN (ADB)
     ├── CONNECT, RESOURCE
     ├── EXECUTE ON DBMS_AQ, DBMS_AQADM
     └── QUOTA UNLIMITED ON DATA
+
+Connection Pooling (OCI only):
+├── DRCP (Database Resident Connection Pooling)
+│   ├── Pool Name: Default pool (automatically created on ADB)
+│   ├── Connection String: Append :POOLED suffix
+│   ├── Benefits: Reduced connection overhead for serverless functions
+│   └── Configuration: No custom setup required (ADB default)
 
 Optional Monitoring Table: PROCESSED_MESSAGES
 ├── id (IDENTITY)
@@ -240,7 +253,9 @@ Optional Monitoring Table: PROCESSED_MESSAGES
 
 ## IAM Architecture (OCI)
 
-### Dynamic Group
+### Dynamic Groups
+
+**Function Dynamic Group**:
 ```
 Name: txeventq-function-dg
 Matching Rule: ALL {
@@ -249,7 +264,18 @@ Matching Rule: ALL {
 }
 ```
 
+**Resource Scheduler Dynamic Group**:
+```
+Name: txeventq-scheduler-dg
+Matching Rule: ALL {
+  resource.type='resourceschedule',
+  resource.id='<resource-schedule-ocid>'
+}
+```
+
 ### Policies
+
+**Function Policy** (for Object Storage and Network access):
 ```hcl
 # Object Storage access
 allow dynamic-group txeventq-function-dg to manage objects
@@ -266,7 +292,15 @@ allow dynamic-group txeventq-function-dg to use virtual-network-family
   in compartment <name>
 ```
 
+**Scheduler Policy** (for Function invocation):
+```hcl
+# Allow Resource Scheduler to invoke function
+allow dynamic-group txeventq-scheduler-dg to manage functions-family
+  in compartment <name>
+```
+
 ### Resource Principal Authentication
+
 ```java
 // No API keys needed - function authenticates via instance principal
 ResourcePrincipalAuthenticationDetailsProvider provider =
@@ -279,6 +313,7 @@ ObjectStorageClient client = ObjectStorageClient.builder()
 ## Deployment Architecture
 
 ### Terraform Structure
+
 ```
 terraform/
 ├── main.tf          # Provider, backend config
@@ -287,13 +322,14 @@ terraform/
 ├── network.tf       # VCN, subnets, gateways, NSGs
 ├── database.tf      # Autonomous Database
 ├── storage.tf       # Object Storage bucket
-├── iam.tf           # Dynamic group, policies
+├── iam.tf           # Dynamic groups, policies
 ├── functions.tf     # Application, function, config
-├── monitoring.tf    # Alarm, topic, subscription
+├── scheduler.tf     # Resource Scheduler schedule
 └── compute.tf       # Compute instance for mailpit
 ```
 
 ### Ansible Structure
+
 ```
 ansible/
 ├── inventory        # Compute instance IP
@@ -305,17 +341,18 @@ ansible/
 
 ## Monitoring Architecture
 
-### Alarm Configuration
+### Resource Scheduler Configuration
+
 ```
-Namespace: oci_computeagent
-Query: AlarmCount[1m].count() > -1  # Always fires
-Frequency: 5 minutes
-Severity: INFO
-Repeat Notification: PT5M (5 minutes)
-Destination: Notification Topic
+Action: START_RESOURCE (invokes function)
+Recurrence Type: CRON
+Recurrence Details: 0 * * * *  # Every hour (configurable)
+Resources: Function OCID
+Note: Minimum interval is 1 hour per OCI limitations
 ```
 
 ### Logging Flow
+
 ```
 Function Logs
   ├─> OCI Logging Service
@@ -327,6 +364,7 @@ Function Logs
 ```
 
 ### Metrics (OCI Monitoring)
+
 ```
 Function Metrics:
 ├─> FunctionInvocations (count)
@@ -344,20 +382,26 @@ Custom Metrics (optional):
 ## Scalability Considerations
 
 ### Current Design (POC)
+
 - **Concurrency**: 1 (single function instance)
-- **Throughput**: ~60 messages/hour (12 invocations * 5 messages/batch)
-- **Latency**: Up to 5 minutes (alarm frequency)
+- **Throughput**: ~5 messages/hour (1 invocation/hour \* 5 messages/batch)
+- **Latency**: Up to 1 hour (scheduler frequency, configurable)
+- **Note**: OCI Resource Scheduler minimum interval is 1 hour
 
 ### Scale-Up Options
+
 1. **Increase Batch Size**: 10-20 messages (ensure < 180s timeout)
 2. **Increase Concurrency**: 2-5 parallel instances (check queue depth)
-3. **Reduce Alarm Frequency**: 1-minute interval (higher cost)
+3. **Adjust Schedule Frequency**: CRON expression for different intervals (minimum 1 hour)
 4. **Add Connection Pooling**: Oracle UCP (for high-volume scenarios)
 5. **Optimize Cold Starts**: Pre-warm containers, minimize wallet size
 
 ### Bottlenecks
+
 - Function timeout: 180 seconds (hard limit)
-- Database connection overhead: ~500ms per cold start
+- Database connection overhead:
+  - LOCAL: ~500ms per cold start (direct connection)
+  - OCI: ~100-200ms per cold start (DRCP reduces overhead)
 - Email sending: ~100-200ms per email (sequential)
 - Object Storage PUT: ~50-100ms per file
 
@@ -366,25 +410,30 @@ Custom Metrics (optional):
 ### Defense in Depth
 
 **Layer 1: Network**
+
 - Private subnets for functions (no public internet access)
 - NSG rules (minimal required ports)
 - NAT Gateway (outbound only)
 
 **Layer 2: Authentication**
+
 - ADB: mTLS with wallet (mutual TLS)
 - OCI SDK: Resource Principal (no static credentials)
 - SMTP: Plain Auth (username/password)
 
 **Layer 3: Authorization**
+
 - IAM Dynamic Group (scoped to compartment)
 - Policies (least privilege, bucket-specific)
 
 **Layer 4: Data Protection**
+
 - Object Storage: Encryption at rest (Oracle-managed keys)
 - Wallet: Encrypted, base64-encoded in function config
 - Secrets: Function config (POC) or OCI Vault (production)
 
 **Layer 5: Audit**
+
 - Function logs (all operations logged)
 - Database audit (optional PROCESSED_MESSAGES table)
 - OCI Audit service (infrastructure changes)
