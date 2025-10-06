@@ -9,6 +9,7 @@ This project demonstrates an event-driven architecture using Oracle Database TxE
 **Problem**: Organizations need to process queued messages, store their content securely, and deliver them to stakeholders via email with secure download links.
 
 **Solution**: An automated serverless pipeline that:
+
 - Dequeues messages from Oracle Database TxEventQ
 - Stores content in Object Storage
 - Generates secure Pre-Authenticated Request (PAR) links
@@ -16,6 +17,7 @@ This project demonstrates an event-driven architecture using Oracle Database TxE
 - Runs periodically without manual intervention
 
 **Benefits**:
+
 - Serverless architecture with pay-per-use pricing
 - Scalable message processing with batching
 - Secure content delivery with time-limited PAR links
@@ -24,7 +26,9 @@ This project demonstrates an event-driven architecture using Oracle Database TxE
 ## Business Concepts
 
 ### Message Queue (TxEventQ)
+
 Messages are enqueued in Oracle Database TxEventQ with a simple JSON payload:
+
 ```json
 {
   "title": "Monthly Sales Report",
@@ -34,75 +38,58 @@ Messages are enqueued in Oracle Database TxEventQ with a simple JSON payload:
 ```
 
 ### Content Storage
+
 - **Local**: Files saved to local directory for development/testing
 - **Cloud**: Files uploaded to OCI Object Storage with secure PAR links
 
 ### Delivery
+
 HTML-formatted emails with:
+
 - Report title and date
 - Secure download link (PAR)
 - Professional email template
 
 ### Automation
+
 OCI Resource Scheduler triggers the function periodically (configurable via CRON expression) to process pending messages.
 
 ## Architecture
 
 ### High-Level Flow
-```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│ OCI Resource    │         │  OCI Functions   │         │ Autonomous DB   │
-│   Scheduler     ├────────>│  (Serverless)    ├────────>│   23ai w/       │
-│ (CRON trigger)  │         │                  │         │   TxEventQ      │
-└─────────────────┘         │  - Dequeue msgs  │         └─────────────────┘
-                            │  - Create files  │
-                            │  - Upload to OS  │                 │
-                            │  - Create PARs   │                 │
-                            │  - Send emails   │                 │
-                            └────────┬─────────┘                 │
-                                     │                           │
-                                     v                           │
-                            ┌──────────────────┐                 │
-                            │ Object Storage   │                 │
-                            │  + PAR Links     │                 │
-                            └──────────────────┘                 │
-                                     │                           │
-                                     v                           │
-                            ┌──────────────────┐                 │
-                            │  SMTP Server     │<────────────────┘
-                            └──────────────────┘
-                                     │
-                                     v
-                            ┌──────────────────┐
-                            │   Email Client   │
-                            └──────────────────┘
-```
+
+![Architecture Overview](./docs/architecture_overview.png)
 
 ### Components
 
 **Database Layer**:
+
 - Oracle Database FREE 23ai (local) or Autonomous Database 23ai (cloud)
 - TxEventQ for message queuing
 - JSON payload type
 - DRCP for connection pooling (cloud only)
 
 **Function Layer**:
+
 - Java 23 serverless function
 - Fn Project runtime (local) or OCI Functions (cloud)
 - Batch processing (up to 20 messages)
 - 3-minute timeout
 
 **Storage Layer**:
+
 - Local filesystem (development)
 - OCI Object Storage (production)
 - Pre-Authenticated Requests for secure access
 
 **Notification Layer**:
+
 - SMTP-based email delivery
 - Mailpit (local testing)
 - Customer SMTP server (production)
 
 **Orchestration Layer** (Cloud only):
+
 - OCI Resource Scheduler (CRON-based scheduling)
 - Direct function invocation (no intermediate notification service)
 
@@ -130,11 +117,13 @@ OCI Resource Scheduler triggers the function periodically (configurable via CRON
 This project supports two deployment modes:
 
 ### Local Development
+
 For development, testing, and iteration without OCI costs.
 
 → **[LOCAL.md](LOCAL.md)** - Step-by-step guide for local deployment
 
 ### Cloud Production
+
 For production deployment on Oracle Cloud Infrastructure.
 
 → **[CLOUD.md](CLOUD.md)** - Step-by-step guide for cloud deployment
