@@ -150,8 +150,3 @@ For production deployment on Oracle Cloud Infrastructure.
 - **[REQUIREMENTS.md](REQUIREMENTS.md)** - Functional and non-functional requirements
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed system architecture
 - **[IMPLEMENTATION.md](IMPLEMENTATION.md)** - Complete implementation details
-- **[CONSTRAINTS.md](CONSTRAINTS.md)** - Project scope and constraints
-
-## License
-
-Enterprise Proof of Concept
